@@ -213,6 +213,29 @@ export default function BabyApp() {
   const [chatBotReady, setChatBotReady] = useState(false);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
 
+  // Voice recognition
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  const startVoiceRecognition = useCallback(() => {
+    const SpeechRecognition = (window as Window & { SpeechRecognition?: typeof globalThis.SpeechRecognition; webkitSpeechRecognition?: typeof globalThis.SpeechRecognition }).SpeechRecognition || (window as Window & { webkitSpeechRecognition?: typeof globalThis.SpeechRecognition }).webkitSpeechRecognition;
+    if (!SpeechRecognition) { alert('이 브라우저는 음성 인식을 지원하지 않습니다.'); return; }
+    if (isRecording) { recognitionRef.current?.stop(); return; }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ko-KR';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (e: SpeechRecognitionEvent) => {
+      const transcript = e.results[0][0].transcript;
+      setLfNote(prev => prev ? prev + ' ' + transcript : transcript);
+    };
+    recognition.onerror = () => setIsRecording(false);
+    recognition.onend = () => setIsRecording(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsRecording(true);
+  }, [isRecording]);
+
   // Toast
   const [toast, setToast] = useState('');
   const [toastVisible, setToastVisible] = useState(false);
@@ -548,7 +571,15 @@ export default function BabyApp() {
                 </select>
               </div>
             )}
-            <div className="form-group"><label>메모</label><textarea value={lfNote} onChange={e=>setLfNote(e.target.value)} placeholder="특이사항을 입력하세요" /></div>
+            <div className="form-group">
+              <label>메모</label>
+              <div style={{position:'relative'}}>
+                <textarea value={lfNote} onChange={e=>setLfNote(e.target.value)} placeholder="특이사항을 입력하세요" style={{paddingRight:'2.8rem'}} />
+                <button type="button" onClick={startVoiceRecognition} title={isRecording?'음성 인식 중지':'음성으로 입력'} style={{position:'absolute',right:'0.5rem',bottom:'0.5rem',background:isRecording?'#ef4444':'#6366f1',color:'#fff',border:'none',borderRadius:'50%',width:'2rem',height:'2rem',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1rem',flexShrink:0}}>
+                  {isRecording ? '⏹' : '🎤'}
+                </button>
+              </div>
+            </div>
             <button className="btn-primary btn-full" onClick={saveLog}>{TYPE_ICONS[addLogType]} {TYPE_LABELS[addLogType]} 기록 저장</button>
           </div>
         </div>
