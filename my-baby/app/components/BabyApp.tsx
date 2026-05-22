@@ -3,6 +3,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 // ── Types ────────────────────────────────────────────────────────
+
+// Web Speech API — not yet included in TypeScript 5.9 DOM lib
+interface SpeechRecognitionEvent extends Event { results: SpeechRecognitionResultList; }
+interface SpeechRecognitionLike {
+  lang: string; interimResults: boolean; maxAlternatives: number;
+  onresult: ((e: SpeechRecognitionEvent) => void) | null;
+  onerror: ((e: Event) => void) | null;
+  onend: (() => void) | null;
+  start(): void; stop(): void;
+}
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
 type LogType = 'sleep' | 'feed' | 'pee' | 'poop' | 'cry' | 'walk';
 type Page = 'home' | 'timeline' | 'schedule' | 'health' | 'chat';
 type ModalState = 'setup' | 'addLog' | 'healthLog' | null;
@@ -215,10 +227,10 @@ export default function BabyApp() {
 
   // Voice recognition
   const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const startVoiceRecognition = useCallback(() => {
-    const SpeechRecognition = (window as Window & { SpeechRecognition?: typeof globalThis.SpeechRecognition; webkitSpeechRecognition?: typeof globalThis.SpeechRecognition }).SpeechRecognition || (window as Window & { webkitSpeechRecognition?: typeof globalThis.SpeechRecognition }).webkitSpeechRecognition;
+    const SpeechRecognition = (window as Window & { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor }).SpeechRecognition || (window as Window & { webkitSpeechRecognition?: SpeechRecognitionCtor }).webkitSpeechRecognition;
     if (!SpeechRecognition) { alert('이 브라우저는 음성 인식을 지원하지 않습니다.'); return; }
     if (isRecording) { recognitionRef.current?.stop(); return; }
     const recognition = new SpeechRecognition();
