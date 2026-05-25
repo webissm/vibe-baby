@@ -17,7 +17,7 @@ type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 type LogType = 'sleep' | 'feed' | 'pee' | 'poop' | 'cry' | 'walk';
 type Page = 'home' | 'timeline' | 'schedule' | 'health' | 'chat';
-type ModalState = 'setup' | 'addLog' | 'healthLog' | null;
+type ModalState = 'setup' | 'addLog' | 'healthLog' | 'logDetail' | null;
 type TodoCat = 'vaccine' | 'formula' | 'solid' | 'other';
 type TodoFilter = 'all' | TodoCat;
 type HealthTab = 'development' | 'logs' | 'medication';
@@ -34,6 +34,7 @@ interface Todo { id: string; text: string; category: TodoCat; completed: boolean
 interface HealthLog { id: string; type: HealthLogType; detail: string; date: string; time: string; }
 interface Medication { id: string; name: string; dose: string; freq: string; note: string; date: string; }
 interface AppState {
+  babyId: number | null;
   baby: Baby | null;
   logs: Record<string, Log[]>;
   todos: Todo[];
@@ -45,7 +46,6 @@ interface MilestoneItem { id: string; text: string; }
 interface MilestoneGroup { minM: number; maxM: number; title: string; icon: string; items: MilestoneItem[]; }
 
 // ── Constants ────────────────────────────────────────────────────
-const STORAGE_KEY = 'babylog_v1';
 const TYPE_LABELS: Record<LogType, string> = { sleep:'수면', feed:'수유', pee:'소변', poop:'대변', cry:'울음', walk:'산책' };
 const TYPE_ICONS:  Record<LogType, string> = { sleep:'😴', feed:'🍼', pee:'💧', poop:'💩', cry:'😢', walk:'🌿' };
 const CAT_LABELS:  Record<TodoCat, string> = { vaccine:'예방접종', formula:'분유', solid:'이유식', other:'기타' };
@@ -91,7 +91,7 @@ function escHtml(s: string) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function defaultState(): AppState {
-  return { baby:null, logs:{}, todos:[], health:{logs:[],medications:[]}, development:{} };
+  return { babyId:null, baby:null, logs:{}, todos:[], health:{logs:[],medications:[]}, development:{} };
 }
 
 // ── Milestones ───────────────────────────────────────────────────
@@ -184,6 +184,11 @@ export default function BabyApp() {
   const [currentPage, setCurrentPage] = useState<Page>('home');
   const [modal, setModal] = useState<ModalState>(null);
 
+  // Log detail / edit
+  const [selectedLog, setSelectedLog] = useState<(Log & { dateKey: string }) | null>(null);
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [editingLogDateKey, setEditingLogDateKey] = useState('');
+
   // Add log form
   const [addLogType, setAddLogType] = useState<LogType>('sleep');
   const [lfStart, setLfStart] = useState('');
@@ -257,13 +262,13 @@ export default function BabyApp() {
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const [headerDate, setHeaderDate] = useState('');
 
-  // Load from localStorage
+  // Load from DB via API
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setAppState(Object.assign(defaultState(), JSON.parse(raw)));
-    } catch {}
-    setMounted(true);
+    fetch('/api/state')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setAppState(Object.assign(defaultState(), data)); })
+      .catch(() => {})
+      .finally(() => setMounted(true));
   }, []);
 
   // Header date updater
@@ -303,7 +308,6 @@ export default function BabyApp() {
 
   // ── Helpers ──────────────────────────────────────────────────
   const saveAppState = useCallback((s: AppState) => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
     setAppState(s);
   }, []);
 
@@ -325,14 +329,16 @@ export default function BabyApp() {
   // ── Log ──────────────────────────────────────────────────────
   const openAddLog = (type: LogType) => {
     const now = nowHHMM(), end = minToHM((hmToMin(now) + 60) % 1440);
+    setEditingLogId(null);
     setAddLogType(type); setLfStart(now); setLfEnd(end); setLfTime(now);
     setLfAmount(''); setLfFeedType('분유'); setLfColor('노란색'); setLfReason(''); setLfNote('');
     setModal('addLog');
   };
 
   const saveLog = () => {
-    const dateKey = currentPage === 'timeline' ? timelineDate : todayStr();
-    const log: Log = { id: uid(), type: addLogType, date: dateKey, note: lfNote.trim() };
+    const isEdit = !!editingLogId;
+    const dateKey = isEdit ? editingLogDateKey : (currentPage === 'timeline' ? timelineDate : todayStr());
+    const log: Log = { id: editingLogId || uid(), type: addLogType, date: dateKey, note: lfNote.trim() };
     if (addLogType === 'sleep' || addLogType === 'cry' || addLogType === 'walk') {
       if (!lfStart) { showToast('시작 시간을 입력해주세요'); return; }
       log.startTime = lfStart; if (lfEnd) log.endTime = lfEnd;
@@ -346,18 +352,47 @@ export default function BabyApp() {
 
     const ns = { ...appState };
     if (!ns.logs[dateKey]) ns.logs[dateKey] = [];
-    ns.logs[dateKey] = [...ns.logs[dateKey], log].sort(
-      (a,b) => (a.startTime||a.time||'').localeCompare(b.startTime||b.time||'')
-    );
-    saveAppState(ns); setModal(null);
-    showToast(`${TYPE_ICONS[addLogType]} ${TYPE_LABELS[addLogType]} 기록이 저장됐어요!`);
+    const sorted = (arr: Log[]) => arr.sort((a,b)=>(a.startTime||a.time||'').localeCompare(b.startTime||b.time||''));
+    if (isEdit) {
+      ns.logs[dateKey] = sorted(ns.logs[dateKey].map(l => l.id === editingLogId ? log : l));
+      saveAppState(ns); setModal(null); setEditingLogId(null);
+      showToast(`✏️ ${TYPE_LABELS[addLogType]} 기록이 수정됐어요!`);
+      fetch(`/api/logs/${editingLogId}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(log) }).catch(console.error);
+    } else {
+      ns.logs[dateKey] = sorted([...ns.logs[dateKey], log]);
+      saveAppState(ns); setModal(null);
+      showToast(`${TYPE_ICONS[addLogType]} ${TYPE_LABELS[addLogType]} 기록이 저장됐어요!`);
+      fetch('/api/logs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ...log, babyId: appState.babyId }) }).catch(console.error);
+    }
   };
 
   const deleteLog = (dateKey: string, id: string) => {
     if (!confirm('이 기록을 삭제할까요?')) return;
     const ns = { ...appState };
     ns.logs[dateKey] = (ns.logs[dateKey] || []).filter(l => l.id !== id);
-    saveAppState(ns); showToast('기록이 삭제됐어요');
+    saveAppState(ns); setModal(null); showToast('기록이 삭제됐어요');
+    fetch(`/api/logs/${id}`, { method:'DELETE' }).catch(console.error);
+  };
+
+  const openLogDetail = (dateKey: string, log: Log) => {
+    setSelectedLog({ ...log, dateKey });
+    setModal('logDetail');
+  };
+
+  const openEditLog = () => {
+    if (!selectedLog) return;
+    setEditingLogId(selectedLog.id);
+    setEditingLogDateKey(selectedLog.dateKey);
+    setAddLogType(selectedLog.type);
+    setLfStart(selectedLog.startTime || '');
+    setLfEnd(selectedLog.endTime || '');
+    setLfTime(selectedLog.time || '');
+    setLfAmount(selectedLog.amount?.toString() || '');
+    setLfFeedType(selectedLog.feedType || '분유');
+    setLfColor(selectedLog.color || '노란색');
+    setLfReason(selectedLog.reason || '');
+    setLfNote(selectedLog.note || '');
+    setModal('addLog');
   };
 
   // ── Health ───────────────────────────────────────────────────
@@ -369,36 +404,44 @@ export default function BabyApp() {
   };
   const saveHealthLog = () => {
     if (!hfDetail.trim()) { showToast('내용을 입력해주세요'); return; }
+    const newLog = { id:uid(), type:hfType, detail:hfDetail.trim(), date:hfDate, time:hfTime2 };
     const ns = { ...appState, health: { ...appState.health } };
-    ns.health.logs = [...(ns.health.logs||[]), { id:uid(), type:hfType, detail:hfDetail.trim(), date:hfDate, time:hfTime2 }];
+    ns.health.logs = [...(ns.health.logs||[]), newLog];
     saveAppState(ns); setModal(null); showToast('🌡️ 건강 기록이 저장됐어요!');
+    fetch('/api/health/logs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ...newLog, babyId: appState.babyId }) }).catch(console.error);
   };
   const saveMedication = () => {
     if (!hfMedname.trim()) { showToast('약 이름을 입력해주세요'); return; }
+    const newMed = { id:uid(), name:hfMedname.trim(), dose:hfDose, freq:hfFreq, note:hfMedNote, date:hfMedDate };
     const ns = { ...appState, health: { ...appState.health } };
-    ns.health.medications = [...(ns.health.medications||[]), { id:uid(), name:hfMedname.trim(), dose:hfDose, freq:hfFreq, note:hfMedNote, date:hfMedDate }];
+    ns.health.medications = [...(ns.health.medications||[]), newMed];
     saveAppState(ns); setModal(null); showToast('💊 복약 정보가 저장됐어요!');
+    fetch('/api/health/medications', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ...newMed, babyId: appState.babyId }) }).catch(console.error);
   };
 
   // ── Todo ─────────────────────────────────────────────────────
   const addTodo = () => {
     const text = todoInputRef.current?.value.trim() || '';
     if (!text) { showToast('내용을 입력해주세요'); return; }
+    const newTodo = { id:uid(), text, category:todoCat, completed:false, createdAt:Date.now() };
     const ns = { ...appState };
-    ns.todos = [{ id:uid(), text, category:todoCat, completed:false, createdAt:Date.now() }, ...ns.todos];
+    ns.todos = [newTodo, ...ns.todos];
     saveAppState(ns); if (todoInputRef.current) todoInputRef.current.value = '';
     showToast('✅ 항목이 추가됐어요!');
+    fetch('/api/todos', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ...newTodo, babyId: appState.babyId }) }).catch(console.error);
   };
   const toggleTodo = (id: string) => {
     const ns = { ...appState };
     ns.todos = ns.todos.map(t => t.id===id?{...t,completed:!t.completed}:t);
     const t = ns.todos.find(t => t.id===id);
     saveAppState(ns); showToast(t?.completed?'✓ 완료 처리됐어요!':'↩ 완료가 취소됐어요');
+    fetch(`/api/todos/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({completed:t?.completed}) }).catch(console.error);
   };
   const deleteTodo = (id: string) => {
     const ns = { ...appState };
     ns.todos = ns.todos.filter(t => t.id!==id);
     saveAppState(ns);
+    fetch(`/api/todos/${id}`, { method:'DELETE' }).catch(console.error);
   };
 
   // ── Development ──────────────────────────────────────────────
@@ -406,23 +449,43 @@ export default function BabyApp() {
     const ns = { ...appState };
     ns.development = { ...ns.development, [id]: !ns.development[id] };
     saveAppState(ns); showToast(ns.development[id]?'✓ 발달 항목을 완료했어요!':'↩ 발달 항목이 취소됐어요');
+    fetch(`/api/developments/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ completed: ns.development[id], babyId: ns.babyId }) }).catch(console.error);
   };
 
   // ── Setup ────────────────────────────────────────────────────
-  const handleSetup = (e: React.FormEvent) => {
+  const handleLogout = () => {
+    setAppState(prev => ({ ...prev, babyId: null, baby: null }));
+    if (setupNameRef.current) setupNameRef.current.value = '';
+    if (setupBirthRef.current) setupBirthRef.current.value = '';
+    setSetupGender('girl');
+    setModal('setup');
+    showToast('로그아웃 됐어요.');
+  };
+
+  const handleSetup = async (e: React.FormEvent) => {
     e.preventDefault();
     const name = setupNameRef.current?.value.trim() || '';
     const birth = setupBirthRef.current?.value || '';
     if (!name) { showToast('아기 이름을 입력해주세요'); return; }
     if (!birth) { showToast('생년월일을 입력해주세요'); return; }
     if (birth > todayStr()) { showToast('생년월일이 오늘보다 미래일 수 없어요'); return; }
-    const ns = { ...appState, baby: { name, birthDate: birth, gender: setupGender } };
-    if (ns.todos.length === 0) {
+    const newBaby = { name, birthDate: birth, gender: setupGender };
+    const babyRes = await fetch('/api/baby', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(newBaby) }).then(r => r.json()).catch(() => null);
+    const babyId: number | null = babyRes?.id ?? null;
+    // 해당 아기의 전체 상태를 서버에서 불러와 복원
+    const url = babyId ? `/api/state?babyId=${babyId}` : '/api/state';
+    const data = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+    const ns = Object.assign(defaultState(), data || { babyId, baby: newBaby });
+    const isFirstSetup = ns.todos.length === 0;
+    if (isFirstSetup) {
       ns.todos = [
-        { id:uid(), text:'BCG 접종 (출생 후 4주 이내)', category:'vaccine', completed:false, createdAt:Date.now() },
-        { id:uid(), text:'B형간염 2차 접종 (1개월)', category:'vaccine', completed:false, createdAt:Date.now() },
-        { id:uid(), text:'이유식 시작 알아보기', category:'solid', completed:false, createdAt:Date.now() },
+        { id:uid(), text:'BCG 접종 (출생 후 4주 이내)', category:'vaccine' as const, completed:false, createdAt:Date.now() },
+        { id:uid(), text:'B형간염 2차 접종 (1개월)', category:'vaccine' as const, completed:false, createdAt:Date.now() },
+        { id:uid(), text:'이유식 시작 알아보기', category:'solid' as const, completed:false, createdAt:Date.now() },
       ];
+      for (const todo of ns.todos) {
+        await fetch('/api/todos', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ...todo, babyId }) }).catch(console.error);
+      }
     }
     saveAppState(ns); setModal(null);
     showToast(`👶 ${name}${koreanParticle(name,'이의','의')} 기록을 시작해요!`);
@@ -488,6 +551,36 @@ export default function BabyApp() {
 
   const timelineLogs = appState.logs[timelineDate] || [];
 
+  // ── Timeline overlap layout ───────────────────────────────────
+  const timelineLayout = (() => {
+    type Block = { log: Log; top: number; height: number; bottom: number; col: number; totalCols: number; };
+    const blocks: Block[] = timelineLogs.map(log => {
+      const startMin = hmToMin(log.startTime || log.time || '00:00');
+      const endMin = log.endTime ? hmToMin(log.endTime) : null;
+      let height = 28;
+      if (endMin !== null) { let dur = endMin - startMin; if (dur <= 0) dur += 1440; height = Math.max(dur, 24); }
+      return { log, top: startMin, height, bottom: startMin + height, col: 0, totalCols: 1 };
+    });
+
+    // Assign columns: smallest available not used by already-placed overlapping blocks
+    for (let i = 0; i < blocks.length; i++) {
+      const used = new Set<number>();
+      for (let j = 0; j < i; j++) {
+        if (blocks[j].bottom > blocks[i].top && blocks[j].top < blocks[i].bottom) used.add(blocks[j].col);
+      }
+      let col = 0; while (used.has(col)) col++;
+      blocks[i].col = col;
+    }
+
+    // Compute max columns needed for each overlap group
+    for (let i = 0; i < blocks.length; i++) {
+      const group = blocks.filter(b => b.bottom > blocks[i].top && b.top < blocks[i].bottom);
+      const maxCol = Math.max(...group.map(b => b.col)) + 1;
+      group.forEach(b => { b.totalCols = Math.max(b.totalCols, maxCol); });
+    }
+    return blocks;
+  })();
+
   // ── Hour axis for timeline ────────────────────────────────────
   const hourLabels = Array.from({length:24},(_,h)=>({h, label: h===0?'자정':h<12?`${h}시`:h===12?'정오':`${h}시`}));
   const nowMin = new Date().getHours()*60+new Date().getMinutes();
@@ -503,6 +596,12 @@ export default function BabyApp() {
       {/* Setup Modal */}
       <div className={`modal-overlay${modal==='setup'?' active':''}`} role="dialog" aria-modal="true">
         <div className="modal-card setup-modal-card">
+          {appState.baby && (
+            <div className="modal-header">
+              <span />
+              <button className="modal-close" onClick={()=>setModal(null)} aria-label="닫기">✕</button>
+            </div>
+          )}
           <div className="setup-hero">
             <div className="setup-icon">👶</div>
             <h2>베이비로그에 오신 걸<br/>환영해요!</h2>
@@ -524,7 +623,11 @@ export default function BabyApp() {
                 <button type="button" className={`gender-btn${setupGender==='boy'?' active':''}`} onClick={()=>setSetupGender('boy')}>👦 남아</button>
               </div>
             </div>
-            <button type="submit" className="btn-primary btn-full">시작하기 ✨</button>
+            {appState.baby ? (
+              <button type="button" className="btn-danger btn-full" onClick={handleLogout}>로그아웃</button>
+            ) : (
+              <button type="submit" className="btn-primary btn-full">시작하기 ✨</button>
+            )}
           </form>
         </div>
       </div>
@@ -533,8 +636,8 @@ export default function BabyApp() {
       <div className={`modal-overlay${modal==='addLog'?' active':''}`} role="dialog" aria-modal="true">
         <div className="modal-card">
           <div className="modal-header">
-            <h3>기록 추가</h3>
-            <button className="modal-close" onClick={()=>setModal(null)} aria-label="닫기">✕</button>
+            <h3>{editingLogId ? '기록 수정' : '기록 추가'}</h3>
+            <button className="modal-close" onClick={()=>{setEditingLogId(null);setModal(null);}} aria-label="닫기">✕</button>
           </div>
           <div className="log-type-tabs" role="tablist">
             {(['sleep','feed','pee','poop','cry','walk'] as LogType[]).map(type=>(
@@ -592,7 +695,12 @@ export default function BabyApp() {
                 </button>
               </div>
             </div>
-            <button className="btn-primary btn-full" onClick={saveLog}>{TYPE_ICONS[addLogType]} {TYPE_LABELS[addLogType]} 기록 저장</button>
+            {editingLogId && (
+              <button className="btn-secondary btn-full" style={{marginBottom:'8px'}} onClick={()=>{setEditingLogId(null);setModal('logDetail');}}>← 취소</button>
+            )}
+            <button className="btn-primary btn-full" onClick={saveLog}>
+              {editingLogId ? `✏️ ${TYPE_LABELS[addLogType]} 수정 완료` : `${TYPE_ICONS[addLogType]} ${TYPE_LABELS[addLogType]} 기록 저장`}
+            </button>
           </div>
         </div>
       </div>
@@ -635,6 +743,81 @@ export default function BabyApp() {
               </>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Log Detail Modal */}
+      <div className={`modal-overlay${modal==='logDetail'?' active':''}`} role="dialog" aria-modal="true">
+        <div className="modal-card">
+          <div className="modal-header">
+            <h3>기록 상세</h3>
+            <button className="modal-close" onClick={()=>setModal(null)} aria-label="닫기">✕</button>
+          </div>
+          {selectedLog && (
+            <div className="log-detail-view">
+              <div className="log-detail-hero">
+                <span className="log-detail-hero-icon">{TYPE_ICONS[selectedLog.type]}</span>
+                <div>
+                  <div className="log-detail-hero-type">{TYPE_LABELS[selectedLog.type]}</div>
+                  <div className="log-detail-hero-date">{fmtDisplayDate(selectedLog.dateKey)}</div>
+                </div>
+              </div>
+              <div className="log-detail-rows">
+                {(selectedLog.type==='sleep'||selectedLog.type==='cry'||selectedLog.type==='walk') && (
+                  <>
+                    <div className="log-detail-row">
+                      <span className="log-detail-key">시간</span>
+                      <span className="log-detail-val">{selectedLog.startTime||'—'}{selectedLog.endTime?` ~ ${selectedLog.endTime}`:''}</span>
+                    </div>
+                    {selectedLog.startTime && selectedLog.endTime && (
+                      <div className="log-detail-row">
+                        <span className="log-detail-key">소요 시간</span>
+                        <span className="log-detail-val">{fmtDuration(selectedLog.startTime, selectedLog.endTime)}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+                {(selectedLog.type==='feed'||selectedLog.type==='pee'||selectedLog.type==='poop') && (
+                  <div className="log-detail-row">
+                    <span className="log-detail-key">시간</span>
+                    <span className="log-detail-val">{selectedLog.time||selectedLog.startTime||'—'}</span>
+                  </div>
+                )}
+                {selectedLog.type==='feed' && (<>
+                  <div className="log-detail-row">
+                    <span className="log-detail-key">수유량</span>
+                    <span className="log-detail-val">{selectedLog.amount ? `${selectedLog.amount}ml` : '—'}</span>
+                  </div>
+                  <div className="log-detail-row">
+                    <span className="log-detail-key">수유 방법</span>
+                    <span className="log-detail-val">{selectedLog.feedType||'—'}</span>
+                  </div>
+                </>)}
+                {selectedLog.type==='poop' && (
+                  <div className="log-detail-row">
+                    <span className="log-detail-key">색상</span>
+                    <span className="log-detail-val">{selectedLog.color||'—'}</span>
+                  </div>
+                )}
+                {selectedLog.type==='cry' && (
+                  <div className="log-detail-row">
+                    <span className="log-detail-key">원인</span>
+                    <span className="log-detail-val">{selectedLog.reason||'알 수 없음'}</span>
+                  </div>
+                )}
+                {selectedLog.note && (
+                  <div className="log-detail-row">
+                    <span className="log-detail-key">메모</span>
+                    <span className="log-detail-val log-detail-note">{selectedLog.note}</span>
+                  </div>
+                )}
+              </div>
+              <div className="log-detail-actions">
+                <button className="btn-secondary" style={{flex:1}} onClick={openEditLog}>✏️ 수정</button>
+                <button className="btn-danger" style={{flex:1}} onClick={()=>deleteLog(selectedLog.dateKey, selectedLog.id)}>🗑️ 삭제</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -753,21 +936,30 @@ export default function BabyApp() {
                 {timelineLogs.length===0 && (
                   <div className="tl-empty-msg"><div className="empty-icon">📅</div><p>이 날의 기록이 없어요<br/>+ 버튼으로 추가해보세요</p></div>
                 )}
-                {timelineLogs.map(log=>{
-                  const startMin = hmToMin(log.startTime||log.time||'00:00');
-                  const endMin = log.endTime ? hmToMin(log.endTime) : null;
-                  let top=startMin, height=28;
-                  if(endMin!==null) { let dur=endMin-startMin; if(dur<=0) dur+=1440; top=startMin; height=Math.max(dur,24); }
+                {timelineLayout.map(({log, top, height, col, totalCols})=>{
+                  const leftPct  = (col / totalCols) * 100;
+                  const left  = col === 0            ? '4px'  : `calc(${leftPct}% + 2px)`;
+                  const right = col === totalCols-1  ? '4px'  : `calc(${(1 - (col+1)/totalCols)*100}% + 2px)`;
                   let label = TYPE_ICONS[log.type]+' '+TYPE_LABELS[log.type];
-                  if(log.type==='feed'&&log.amount) label+=` ${log.amount}ml`;
-                  if(log.type==='sleep'&&log.endTime) label+=` (${fmtDuration(log.startTime!,log.endTime)})`;
-                  if(log.type==='walk'&&log.endTime) label+=` (${fmtDuration(log.startTime!,log.endTime)})`;
+                  if(totalCols > 1) label = TYPE_ICONS[log.type]; // 좁을 땐 아이콘만
+                  if(totalCols === 1) {
+                    if(log.type==='feed'&&log.amount) label+=` ${log.amount}ml`;
+                    if(log.type==='sleep'&&log.endTime) label+=` (${fmtDuration(log.startTime!,log.endTime)})`;
+                    if(log.type==='walk'&&log.endTime) label+=` (${fmtDuration(log.startTime!,log.endTime)})`;
+                  }
+                  const fullLabel = (() => {
+                    let l = TYPE_ICONS[log.type]+' '+TYPE_LABELS[log.type];
+                    if(log.type==='feed'&&log.amount) l+=` ${log.amount}ml`;
+                    if(log.type==='sleep'&&log.endTime) l+=` (${fmtDuration(log.startTime!,log.endTime)})`;
+                    if(log.type==='walk'&&log.endTime) l+=` (${fmtDuration(log.startTime!,log.endTime)})`;
+                    return l;
+                  })();
                   return (
                     <div key={log.id} className={`tl-block ${log.type}`}
-                      style={{top:`${top}px`,height:`${height}px`}}
-                      title={label}
-                      onClick={()=>deleteLog(timelineDate,log.id)}>
-                      {height>=28?label:TYPE_ICONS[log.type]}
+                      style={{top:`${top}px`, height:`${height}px`, left, right, width:'auto'}}
+                      title={fullLabel}
+                      onClick={()=>openLogDetail(timelineDate,log)}>
+                      {height>=28 ? label : TYPE_ICONS[log.type]}
                     </div>
                   );
                 })}

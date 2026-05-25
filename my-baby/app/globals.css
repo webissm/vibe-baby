@@ -332,6 +332,28 @@ body { display: flex; justify-content: center; overflow: hidden; }
   position: absolute; left: 0; right: 0; height: 2px;
   background: var(--orange); z-index: 5; pointer-events: none;
 }
+
+/* ── Log Detail Modal ───────────────────────────────────────── */
+.log-detail-view { padding: 4px 0; }
+.log-detail-hero {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+}
+.log-detail-hero-icon { font-size: 2.6rem; line-height: 1; }
+.log-detail-hero-type { font-size: 1.1rem; font-weight: 700; color: var(--text); }
+.log-detail-hero-date { font-size: 12px; color: var(--text-light); margin-top: 3px; }
+.log-detail-rows { display: flex; flex-direction: column; gap: 14px; margin-bottom: 22px; }
+.log-detail-row { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.log-detail-key { font-size: 13px; color: var(--text-light); font-weight: 500; white-space: nowrap; }
+.log-detail-val { font-size: 14px; color: var(--text); font-weight: 700; text-align: right; }
+.log-detail-note { font-weight: 400; color: var(--text-light); }
+.log-detail-actions { display: flex; gap: 10px; }
+.btn-danger {
+  padding: var(--sp-sm) var(--sp-md); background: #fee2e2; color: #dc2626;
+  border: none; border-radius: var(--r-md); font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: opacity .1s;
+}
+.btn-danger:active { opacity: 0.8; }
 .tl-now-line::before {
   content: '';
   position: absolute; left: -4px; top: -4px;
